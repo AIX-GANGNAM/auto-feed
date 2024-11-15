@@ -47,18 +47,22 @@ logger = logging.getLogger(__name__)
 # FastAPI 앱 생성
 app = FastAPI()
 
-# fastapi 실행할때
-# 시작 시 실행될 이벤트 핸들러
+# 시작 시 실행될 이벤트 핸들러(fastapi 실행할때..)
+# 전역 변수로 스케줄러 선언
+scheduler = None
+
 @app.on_event("startup")
 async def startup_event():
+    global scheduler
     print("실시간 검색어 가져오기 시작!")
     scheduler = start_scheduler()
 
-# 종료 시 실행될 이벤트 핸들러
 @app.on_event("shutdown")
 async def shutdown_event():
+    global scheduler
     print("서버 종료...")
-    scheduler.shutdown()  # 서버 종료 시 스케줄러도 정상 종료
+    if scheduler:
+        scheduler.shutdown()  # 서버 종료 시 스케줄러도 정상 종료
 
 # CORS 설정 추가
 app.add_middleware(
@@ -844,11 +848,11 @@ def start_scheduler():
             misfire_grace_time=None,
             coalesce=True,
             max_instances=1,
-            kwargs={
-                'id': None,
-                'parentNick': None,
-                'userId': None
-            }
+            # kwargs={
+            #     'id': None,
+            #     'parentNick': None,
+            #     'userId': None
+            # }
         )
         
         # 스케줄러 시작
