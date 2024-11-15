@@ -2,7 +2,6 @@
 import warnings
 import urllib3
 from urllib3.exceptions import InsecureRequestWarning
-import logging
 
 # SSL 경고 무시 설정
 warnings.simplefilter('ignore', InsecureRequestWarning)
@@ -23,7 +22,6 @@ import openai
 import os
 from pytrends.request import TrendReq
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 import atexit
 from firebase_admin import credentials, firestore, initialize_app
 import firebase_admin
@@ -37,33 +35,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from google.cloud import storage
 import uuid
-import re
+import re  # 정규 표현식 모듈 임포트 추가
 from fastapi.responses import JSONResponse
-
-# 로깅 설정
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # FastAPI 앱 생성
 app = FastAPI()
 
-# fastapi 실행할때
-# 시작 시 실행될 이벤트 핸들러
-@app.on_event("startup")
-async def startup_event():
-    print("실시간 검색어 가져오기 시작!")
-    scheduler = start_scheduler()
-
-# 종료 시 실행될 이벤트 핸들러
-@app.on_event("shutdown")
-async def shutdown_event():
-    print("서버 종료...")
-    scheduler.shutdown()  # 서버 종료 시 스케줄러도 정상 종료
-
 # CORS 설정 추가
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 모든 출처 허용 (필요에 따라 특정 출처로 제한 가능)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -136,6 +117,25 @@ def fetch_trending_keywords(id, parentNick, userId):
                         userId,
                         persona_id
                     )
+            
+            # 페르소나의 관심사와 일치하는 키워드 찾기
+            # for interest in interests:
+            #     matched_trends = [trend for trend in top_keywords if interest.lower() in trend.lower()]
+            #     if matched_trends:
+            #         found_match = True
+            #         # persona_id 생성 (기존 코드에서 가져옴)
+            #         persona_id = f"{persona_type}"
+                    
+            #         print(f"\n{persona_name}의 관심사({interest})와 일치하는 키워드 발견 : {matched_trends}", ", persona_id: " + persona_id, ", userId: " + userId)
+            #         crawl_article(
+            #             f"https://search.naver.com/search.naver?where=news&query={interest}",
+            #             interest,  # 실시간 검색어 대신 관심사 키워드 사용
+            #             persona_name,
+            #             id,
+            #             parentNick,
+            #             userId,
+            #             persona_id
+            #         )
 
     return {"found_match": found_match, "message": "관심사와 일치하는 실시간 검색어가 없습니다."}
 
@@ -428,7 +428,7 @@ def summarize_and_create_feed(content, image_url, persona_name, id, parentNick, 
         )
 
         response = openai.ChatCompletion.create(
-            model="gpt-4o-mini", #gpt-3.5-turbo gpt-4o-mini
+            model="gpt-4o", #gpt-3.5-turbo gpt-4o-mini
             messages=[
                 {"role": "user", "content": persona_prompt}
             ],
@@ -598,6 +598,17 @@ def get_persona_profile_image(user_id, persona_type):
     except Exception as e:
         print(f"프로필 이미지 가져오기 오류: {e}")
         return "https://example.com/default-persona-image.jpg"
+
+# 스케줄러 설정 및 시작
+# def start_scheduler():
+#     scheduler = BackgroundScheduler()
+#     scheduler.add_job(fetch_trending_keywords, 'cron', hour='0,12')  # 매일 0시, 12시에 실행
+#     scheduler.start()
+#     atexit.register(lambda: scheduler.shutdown())
+
+# FastAPI 서버 실행 스레드
+def run_server():
+    uvicorn.run(app, host="0.0.0.0", port=8010)
 
 # 자동 엔드포인트 추가[전체 실행]
 @app.post("/feedAutomatic")
@@ -802,83 +813,9 @@ def find_main_image(soup, article_url):
         traceback.print_exc()
         return None
 
-def scheduled_fetch_trending_keywords_for_all_users():
-    """스케줄러용 래퍼 함수"""
-    try:
-        # Firebase에서 모든 사용자 정보 가져오기
-        users_ref = db.collection('users').get()
-        
-        for user in users_ref:
-            user_data = user.to_dict()
-            if user_data.get('parentNick'):
-                fetch_trending_keywords(
-                    id=generate_uuid(),
-                    parentNick=user_data['parentNick'],
-                    userId=user.id
-                )
-    except Exception as e:
-        logger.error(f"스케줄된 작업 실행 중 오류 발생: {e}")
 
-def job_listener(event):
-    """스케줄러 작업 실행 상태를 모니터링하는 리스너"""
-    if event.exception:
-        logger.error('작업 실행 중 오류 발생: %s', str(event.exception))
-    else:
-        logger.info('작업이 성공적으로 완료되었습니다.')
-
-def start_scheduler():
-    """향상된 스케줄러 시작 함수"""
-    try:
-        scheduler = BackgroundScheduler()
-        
-        # 작업 리스너 추가
-        scheduler.add_listener(job_listener, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED)
-        
-        # 매일 0시와 12시에 실행되는 작업 추가
-        scheduler.add_job(
-            scheduled_fetch_trending_keywords_for_all_users,
-            'cron',
-            hour='6,12,18',  # 오전 6시, 오후 12시, 오후 6시
-            id='trending_keywords_job',
-            name='Fetch Trending Keywords',
-            misfire_grace_time=None,
-            coalesce=True,
-            max_instances=1,
-            kwargs={
-                'id': None,
-                'parentNick': None,
-                'userId': None
-            }
-        )
-        
-        # 스케줄러 시작
-        scheduler.start()
-        logger.info("스케줄러가 시작되었습니다. 매일 오전 6시, 오후 12시, 오후 6시에 실행됩니다.")
-        
-        # 프로그램 종료 시 스케줄러 정상 종료
-        def cleanup():
-            logger.info("스케줄러를 종료합니다...")
-            scheduler.shutdown()
-        
-        atexit.register(cleanup)
-        
-        return scheduler
-        
-    except Exception as e:
-        logger.error(f"스케줄러 시작 중 오류 발생: {e}")
-        raise
-
-# FastAPI 서버 실행 스레드
-def run_server():
-    uvicorn.run(app, host="0.0.0.0", port=8010)
-
-# 메인 실행 부분(python 명령어로 실행할때..!)
+# 메인 함수에서 스케줄러 시작 및 서버 실행
 if __name__ == "__main__":
     print("실시간 검색어 가져오기 시작!")
-    
-    # 스케줄러 시작
-    scheduler = start_scheduler()
-    
-    # 서버 스레드 시작
     server_thread = Thread(target=run_server)
     server_thread.start()

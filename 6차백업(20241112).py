@@ -2,7 +2,6 @@
 import warnings
 import urllib3
 from urllib3.exceptions import InsecureRequestWarning
-import logging
 
 # SSL 경고 무시 설정
 warnings.simplefilter('ignore', InsecureRequestWarning)
@@ -23,7 +22,6 @@ import openai
 import os
 from pytrends.request import TrendReq
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 import atexit
 from firebase_admin import credentials, firestore, initialize_app
 import firebase_admin
@@ -37,33 +35,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from google.cloud import storage
 import uuid
-import re
+import re  # 정규 표현식 모듈 임포트 추가
 from fastapi.responses import JSONResponse
-
-# 로깅 설정
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # FastAPI 앱 생성
 app = FastAPI()
 
-# fastapi 실행할때
-# 시작 시 실행될 이벤트 핸들러
-@app.on_event("startup")
-async def startup_event():
-    print("실시간 검색어 가져오기 시작!")
-    scheduler = start_scheduler()
-
-# 종료 시 실행될 이벤트 핸들러
-@app.on_event("shutdown")
-async def shutdown_event():
-    print("서버 종료...")
-    scheduler.shutdown()  # 서버 종료 시 스케줄러도 정상 종료
-
 # CORS 설정 추가
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 모든 출처 허용 (필요에 따라 특정 출처로 제한 가능)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -136,6 +117,25 @@ def fetch_trending_keywords(id, parentNick, userId):
                         userId,
                         persona_id
                     )
+            
+            # 페르소나의 관심사와 일치하는 키워드 찾기
+            # for interest in interests:
+            #     matched_trends = [trend for trend in top_keywords if interest.lower() in trend.lower()]
+            #     if matched_trends:
+            #         found_match = True
+            #         # persona_id 생성 (기존 코드에서 가져옴)
+            #         persona_id = f"{persona_type}"
+                    
+            #         print(f"\n{persona_name}의 관심사({interest})와 일치하는 키워드 발견 : {matched_trends}", ", persona_id: " + persona_id, ", userId: " + userId)
+            #         crawl_article(
+            #             f"https://search.naver.com/search.naver?where=news&query={interest}",
+            #             interest,  # 실시간 검색어 대신 관심사 키워드 사용
+            #             persona_name,
+            #             id,
+            #             parentNick,
+            #             userId,
+            #             persona_id
+            #         )
 
     return {"found_match": found_match, "message": "관심사와 일치하는 실시간 검색어가 없습니다."}
 
@@ -144,27 +144,20 @@ def crawl_article(url, keyword, persona_name, id, parentNick, userId, persona_id
     print(f"크롤링 시작: {url}")
 
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")  # 새로운 headless 모드 사용
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--ignore-certificate-errors")
     chrome_options.add_argument("--window-size=1920x1080")
-    chrome_options.add_argument("--log-level=3")
-    chrome_options.add_argument("--silent")
-    
-    # WebGL 관련 오류 해결을 위한 옵션 추가
-    chrome_options.add_argument("--disable-software-rasterizer")
-    chrome_options.add_argument("--disable-webgl")
-    chrome_options.add_argument("--disable-webgl2")
-    
-    # 페이지 로딩 타임아웃 설정 추가
-    chrome_options.add_argument("--page-load-strategy=none")
-    chrome_options.page_load_strategy = 'none'
-    
-    # User-Agent 추가
-    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    chrome_options.add_argument("--log-level=3")  # 추가: 불필요한 로그 제거
+    chrome_options.add_argument("--silent")  # 추가: 로그 최소화
 
+    # WebGL 관련 오류 해결을 위한 옵션 추가
+    chrome_options.add_argument("--disable-software-rasterizer")  # 소프트웨어 래스터화 비활성화
+    chrome_options.add_argument("--disable-webgl")               # WebGL 완전히 비활성화
+    chrome_options.add_argument("--disable-webgl2")             # WebGL 2.0 비활성화
+    
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 
     try:
@@ -176,18 +169,10 @@ def crawl_article(url, keyword, persona_name, id, parentNick, userId, persona_id
 
         # 1순위: 제목에 키워드가 포함된 기사 찾기
         articles = soup.find_all('a', class_='news_tit')
-
-        # 1-1. 원본 키워드로 먼저 시도
-        primary_article = next((link for link in articles if keyword in link.get_text()), None)
-
-        # 1-2. 실패시 분리된 키워드로 시도
-        if not primary_article:
-            # 키워드 분리
-            split_keywords = re.findall('[가-힣]+|\d+', keyword)
-            primary_article = next((link for link in articles 
-                                if any(kw in link.get_text() for kw in split_keywords)), None)
+        primary_article = next((link for link in articles if any(kw in link.get_text() for kw in keywords)), None)
 
         if primary_article:
+            # 1순위 기사 선택 시 링크 사용
             link = primary_article['href']
             print(f"1순위로 선택된 기사 링크: {link}")
         else:
@@ -203,15 +188,7 @@ def crawl_article(url, keyword, persona_name, id, parentNick, userId, persona_id
                 paragraphs = article_soup.find_all(['p', 'div', 'span'], class_=lambda x: x and ('content' in x or 'article' in x))
                 content = "\n".join([para.get_text().strip() for para in paragraphs if para.get_text().strip()])
                 
-                # 2-1. 원본 키워드로 먼저 시도
-                if keyword in content:
-                    link = article_url
-                    print(f"2순위로 선택된 기사 링크: {link}")
-                    break
-                
-                # 2-2. 실패시 분리된 키워드로 시도
-                split_keywords = re.findall('[가-힣]+|\d+', keyword)
-                if any(kw in content for kw in split_keywords):
+                if any(kw in content for kw in keywords):
                     link = article_url
                     print(f"2순위로 선택된 기사 링크: {link}")
                     break
@@ -308,20 +285,21 @@ def crawl_article(url, keyword, persona_name, id, parentNick, userId, persona_id
 def upload_image_to_storage(image_url, bucket_name, destination_blob_name):
     try:
         # requests 세션 생성 및 헤더 설정
+        session = requests.Session()
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
             'Accept-Language': 'ko,en;q=0.9,en-US;q=0.8',
             'Referer': 'https://www.google.com/'
         }
-
+        
         # Firebase Storage 버킷 초기화
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(destination_blob_name)
 
-        # 이미지 다운로드 시도 (SSL 검증 비활성화)
+        # 이미지 다운로드 시도 (기본 헤더)
         try:
-            response = requests.get(image_url, headers=headers, verify=False, timeout=10)
+            response = session.get(image_url, headers=headers, verify=False, timeout=10)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             print(f"첫 번째 시도 실패: {e}")
@@ -329,7 +307,7 @@ def upload_image_to_storage(image_url, bucket_name, destination_blob_name):
             # 다른 User-Agent로 재시도
             headers['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             try:
-                response = requests.get(image_url, headers=headers, verify=False, timeout=10)
+                response = session.get(image_url, headers=headers, verify=False, timeout=10)
                 response.raise_for_status()
             except requests.exceptions.RequestException as e:
                 print(f"두 번째 시도 실패: {e}")
@@ -599,6 +577,17 @@ def get_persona_profile_image(user_id, persona_type):
         print(f"프로필 이미지 가져오기 오류: {e}")
         return "https://example.com/default-persona-image.jpg"
 
+# 스케줄러 설정 및 시작
+# def start_scheduler():
+#     scheduler = BackgroundScheduler()
+#     scheduler.add_job(fetch_trending_keywords, 'cron', hour='0,12')  # 매일 0시, 12시에 실행
+#     scheduler.start()
+#     atexit.register(lambda: scheduler.shutdown())
+
+# FastAPI 서버 실행 스레드
+def run_server():
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
 # 자동 엔드포인트 추가[전체 실행]
 @app.post("/feedAutomatic")
 async def feedAutomatic(feed_data: dict):
@@ -802,83 +791,9 @@ def find_main_image(soup, article_url):
         traceback.print_exc()
         return None
 
-def scheduled_fetch_trending_keywords_for_all_users():
-    """스케줄러용 래퍼 함수"""
-    try:
-        # Firebase에서 모든 사용자 정보 가져오기
-        users_ref = db.collection('users').get()
-        
-        for user in users_ref:
-            user_data = user.to_dict()
-            if user_data.get('parentNick'):
-                fetch_trending_keywords(
-                    id=generate_uuid(),
-                    parentNick=user_data['parentNick'],
-                    userId=user.id
-                )
-    except Exception as e:
-        logger.error(f"스케줄된 작업 실행 중 오류 발생: {e}")
 
-def job_listener(event):
-    """스케줄러 작업 실행 상태를 모니터링하는 리스너"""
-    if event.exception:
-        logger.error('작업 실행 중 오류 발생: %s', str(event.exception))
-    else:
-        logger.info('작업이 성공적으로 완료되었습니다.')
-
-def start_scheduler():
-    """향상된 스케줄러 시작 함수"""
-    try:
-        scheduler = BackgroundScheduler()
-        
-        # 작업 리스너 추가
-        scheduler.add_listener(job_listener, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED)
-        
-        # 매일 0시와 12시에 실행되는 작업 추가
-        scheduler.add_job(
-            scheduled_fetch_trending_keywords_for_all_users,
-            'cron',
-            hour='6,12,18',  # 오전 6시, 오후 12시, 오후 6시
-            id='trending_keywords_job',
-            name='Fetch Trending Keywords',
-            misfire_grace_time=None,
-            coalesce=True,
-            max_instances=1,
-            kwargs={
-                'id': None,
-                'parentNick': None,
-                'userId': None
-            }
-        )
-        
-        # 스케줄러 시작
-        scheduler.start()
-        logger.info("스케줄러가 시작되었습니다. 매일 오전 6시, 오후 12시, 오후 6시에 실행됩니다.")
-        
-        # 프로그램 종료 시 스케줄러 정상 종료
-        def cleanup():
-            logger.info("스케줄러를 종료합니다...")
-            scheduler.shutdown()
-        
-        atexit.register(cleanup)
-        
-        return scheduler
-        
-    except Exception as e:
-        logger.error(f"스케줄러 시작 중 오류 발생: {e}")
-        raise
-
-# FastAPI 서버 실행 스레드
-def run_server():
-    uvicorn.run(app, host="0.0.0.0", port=8010)
-
-# 메인 실행 부분(python 명령어로 실행할때..!)
+# 메인 함수에서 스케줄러 시작 및 서버 실행
 if __name__ == "__main__":
     print("실시간 검색어 가져오기 시작!")
-    
-    # 스케줄러 시작
-    scheduler = start_scheduler()
-    
-    # 서버 스레드 시작
     server_thread = Thread(target=run_server)
     server_thread.start()
