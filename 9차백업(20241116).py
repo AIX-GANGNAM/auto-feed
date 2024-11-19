@@ -39,8 +39,6 @@ from google.cloud import storage
 import uuid
 import re
 from fastapi.responses import JSONResponse
-from PIL import Image
-import io
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -313,6 +311,7 @@ def crawl_article(url, keyword, persona_name, id, parentNick, userId, persona_id
 # Firebase Storage에 이미지 업로드 함수 정의
 def upload_image_to_storage(image_url, bucket_name, destination_blob_name):
     try:
+        # requests 세션 생성 및 헤더 설정
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
@@ -320,8 +319,7 @@ def upload_image_to_storage(image_url, bucket_name, destination_blob_name):
             'Referer': 'https://www.google.com/'
         }
 
-        print(f"이미지 다운로드 시도 URL: {image_url}")
-
+        # Firebase Storage 버킷 초기화
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(destination_blob_name)
 
@@ -332,6 +330,7 @@ def upload_image_to_storage(image_url, bucket_name, destination_blob_name):
         except requests.exceptions.RequestException as e:
             print(f"첫 번째 시도 실패: {e}")
             
+            # 다른 User-Agent로 재시도
             headers['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             try:
                 response = requests.get(image_url, headers=headers, verify=False, timeout=10)
@@ -340,41 +339,24 @@ def upload_image_to_storage(image_url, bucket_name, destination_blob_name):
                 print(f"두 번째 시도 실패: {e}")
                 return "https://example.com/default-image.jpg"
 
+        # Content-Type 확인 및 설정
         content_type = response.headers.get('Content-Type', 'image/jpeg')
         if 'image' not in content_type:
-            content_type = 'image/jpeg'
+            content_type = 'image/jpeg'  # 기본값으로 설정
 
         # 이미지 데이터가 유효한지 확인
-        if len(response.content) < 100:
+        if len(response.content) < 100:  # 너무 작은 파일은 제외
             print("유효하지 않은 이미지 데이터")
             return "https://example.com/default-image.jpg"
-        
-        if response.status_code != 200:
-            print(f"이미지 다운로드 실패, 상태 코드: {response.status_code}")
-            return None
-
-        print(f"이미지 다운로드 성공, 크기: {len(response.content)} bytes")
-
-        # 이미지 포맷 확인 후 변환
-        if content_type != 'image/jpeg':
-            jpeg_image_content = convert_to_jpeg(response.content)
-            if jpeg_image_content:
-                response_content = jpeg_image_content
-            else:
-                return "https://example.com/default-image.jpg"
-        else:
-            response_content = response.content
 
         # Firebase Storage에 업로드
         blob.upload_from_string(
-            response_content,
-            content_type='image/jpeg'
+            response.content,
+            content_type=content_type
         )
 
         # 업로드된 이미지에 공개 권한 부여
         blob.make_public()
-
-        print(f"Firebase Storage 업로드 성공: {blob.public_url}")
 
         # 캐시 제어 설정
         blob.cache_control = 'public, max-age=3600'
@@ -384,12 +366,13 @@ def upload_image_to_storage(image_url, bucket_name, destination_blob_name):
 
     except Exception as e:
         print(f"Firebase Storage에 이미지 업로드 중 오류 발생: {e}")
+        
+        # 상세한 에러 정보 출력
         if isinstance(e, requests.exceptions.RequestException):
             print(f"Request 에러 상세: {e.response.status_code if hasattr(e, 'response') else 'No status code'}")
             print(f"Request 에러 헤더: {e.response.headers if hasattr(e, 'response') else 'No headers'}")
         
         return "https://example.com/default-image.jpg"
-
 
 # 기사 요약 및 페르소나 피드 생성 함수
 def summarize_and_create_feed(content, image_url, persona_name, id, parentNick, userId, persona_id):
@@ -449,7 +432,7 @@ def summarize_and_create_feed(content, image_url, persona_name, id, parentNick, 
         )
 
         response = openai.ChatCompletion.create(
-            model="gpt-4o", #gpt-3.5-turbo gpt-4o-mini
+            model="gpt-4o-mini", #gpt-3.5-turbo gpt-4o-mini
             messages=[
                 {"role": "user", "content": persona_prompt}
             ],
@@ -623,15 +606,10 @@ def get_persona_profile_image(user_id, persona_type):
 # 자동 엔드포인트 추가[전체 실행]
 @app.post("/feedAutomatic")
 async def feedAutomatic(feed_data: dict):
-    print("feedAutomatic 엔드포인트 호출됨")  # 기본 print로도 확인
-    logger.info("feedAutomatic 엔드포인트 호출됨")
-    logger.info(f"Received data: {feed_data}")
     try:
         id = feed_data.get("id")
         parentNick = feed_data.get("parentNick")
         userId = feed_data.get("userId")
-
-        logger.info(f"Processing request - id: {id}, parentNick: {parentNick}, userId: {userId}")
 
         result = fetch_trending_keywords(id, parentNick, userId)
         
@@ -826,16 +804,6 @@ def find_main_image(soup, article_url):
         print(f"이미지 검색 중 오류 발생: {e}")
         import traceback
         traceback.print_exc()
-        return None
-    
-def convert_to_jpeg(image_content):
-    try:
-        image = Image.open(io.BytesIO(image_content))
-        output_buffer = io.BytesIO()
-        image.convert("RGB").save(output_buffer, format="JPEG")
-        return output_buffer.getvalue()
-    except Exception as e:
-        print(f"이미지 변환 중 오류 발생: {e}")
         return None
 
 def scheduled_fetch_trending_keywords_for_all_users():
